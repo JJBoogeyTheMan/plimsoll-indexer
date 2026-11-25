@@ -66,6 +66,7 @@ The command fetches the asset's snapshot breakdown from the indexer, verifies th
 | `GET /v1/assets/{sac}/reports?limit=100` | Reserve report history |
 | `GET /v1/reporters` | Active registered reporters |
 | `GET /v1/breakdowns/{hash}` | Exact bytes of a supply breakdown |
+| `GET /v1/events` | `text/event-stream` of `asset_listed`, `supply_posted` and `reserve_posted`, for clients that would otherwise poll |
 | `POST /v1/webhooks`, `GET /v1/webhooks`, `DELETE /v1/webhooks/{id}` | Manage authenticated issuer TOML change subscriptions |
 
 Webhook registration and signature verification are covered in the
@@ -73,6 +74,44 @@ Webhook registration and signature verification are covered in the
 
 Coverage in the API uses the same selection and rounding rules as the contract
 (`internal/coverage`), so the API and `coverage()` on-chain agree.
+
+### Live events
+
+`GET /v1/events` streams ingested events as server-sent events, so a dashboard
+can update when a report lands instead of refetching every asset on a timer:
+
+```bash
+curl -N localhost:8080/v1/events
+```
+
+```
+id: 0023421401557905408-0000000000
+event: supply_posted
+data: {"amount":"9999000000000","ledger":5453219,"posted_at":"2026-10-29T16:02:20Z",...}
+
+: keepalive
+
+```
+
+Each event's `data` is the same JSON the corresponding REST resource serves
+(`Supply`, `Report`, or the listed fields of `Asset`). Events are fanned out
+from the ingest transaction as soon as it commits, so they arrive within one
+`INGEST_INTERVAL`; a `: keepalive` comment every 15 s holds idle connections
+open. At most 128 subscribers are served at once (the rest get `503`); a
+subscriber that stops reading is disconnected rather than allowed to delay
+ingestion.
+
+Resume with the event id: send the `id` of the last event received as
+`Last-Event-ID` on reconnect — EventSource does this automatically — and the
+indexer replays what was missed from Postgres before continuing with live
+events:
+
+```bash
+curl -N -H 'Last-Event-ID: 0023421401557905408-0000000000' localhost:8080/v1/events
+```
+
+The replay comes from storage, not a memory buffer, so it still works after a
+restart and past RPC's ~7-day event retention.
 
 ## Quick start
 

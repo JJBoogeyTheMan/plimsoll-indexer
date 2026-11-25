@@ -16,6 +16,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/strkey"
 
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/coverage"
+	"github.com/plimsoll-protocol/plimsoll-indexer/internal/soroban"
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/store"
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/webhook"
 )
@@ -44,6 +45,8 @@ type fake struct {
 	supply  map[string]*coverage.Supply
 	reports map[string]map[uint32]coverage.Report
 	bodies  map[string][]byte
+	// stored is what EventsSince replays, as if it had been ingested.
+	stored []any
 }
 
 func (f *fake) Ping(context.Context) error { return nil }
@@ -98,6 +101,39 @@ func (f *fake) Progress(context.Context, string) (store.Progress, error) {
 	}, nil
 }
 
+func (f *fake) EventsSince(_ context.Context, after string, limit int) ([]any, error) {
+	var out []any
+	for _, ev := range f.stored {
+		meta, ok := ev.(soroban.WithMeta)
+		if !ok || meta.EventMeta().ID <= after {
+			continue
+		}
+		out = append(out, ev)
+		if len(out) == limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+// newFake builds the fixture the handlers are tested against: one listed asset
+// with one supply snapshot and one report.
+func newFake() *fake {
+	return &fake{
+		assets: []coverage.Asset{{SAC: sac, Code: "PUSD", Issuer: "GISS"}},
+		supply: map[string]*coverage.Supply{
+			sac: {Amount: big.NewInt(1_000_0000000), Ledger: 100, PostedAt: now.Add(-time.Hour)},
+		},
+		reports: map[string]map[uint32]coverage.Report{
+			sac: {coverage.TierIssuerSigned: {
+				Tier: coverage.TierIssuerSigned, Amount: big.NewInt(1_020_0000000),
+				AsOf: now.Add(-2 * time.Hour), Reporter: "GISS", DocURI: "https://x",
+			}},
+		},
+		bodies: map[string][]byte{breakdownHash: []byte(`{"total":"1"}`)},
+	}
+}
+
 type webhookManagerFake struct {
 	webhooks []store.Webhook
 }
@@ -130,19 +166,7 @@ func server() *httptest.Server {
 }
 
 func serverWithWebhooks(manager WebhookManager, codec *webhook.SecretCodec, token string) *httptest.Server {
-	f := &fake{
-		assets: []coverage.Asset{{SAC: sac, Code: "PUSD", Issuer: "GISS"}},
-		supply: map[string]*coverage.Supply{
-			sac: {Amount: big.NewInt(1_000_0000000), Ledger: 100, PostedAt: now.Add(-time.Hour)},
-		},
-		reports: map[string]map[uint32]coverage.Report{
-			sac: {coverage.TierIssuerSigned: {
-				Tier: coverage.TierIssuerSigned, Amount: big.NewInt(1_020_0000000),
-				AsOf: now.Add(-2 * time.Hour), Reporter: "GISS", DocURI: "https://x",
-			}},
-		},
-		bodies: map[string][]byte{breakdownHash: []byte(`{"total":"1"}`)},
-	}
+	f := newFake()
 	s := &Server{
 		Store:             f,
 		WebhookStore:      manager,

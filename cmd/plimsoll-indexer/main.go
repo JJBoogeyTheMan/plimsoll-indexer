@@ -19,6 +19,7 @@ import (
 
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/api"
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/config"
+	"github.com/plimsoll-protocol/plimsoll-indexer/internal/events"
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/horizon"
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/soroban"
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/stellartoml"
@@ -56,6 +57,12 @@ func run(cfg config.Config, log *slog.Logger) error {
 		return err
 	}
 	defer db.Close()
+
+	// Ingestion publishes into this hub, and /v1/events streams from it. It is
+	// in-process: one instance fans out to its own clients, and a reconnecting
+	// client replays what it missed from Postgres.
+	hub := events.NewHub(events.DefaultMaxSubscribers)
+	db.Publisher = hub
 
 	rpc := rpcclient.NewClient(cfg.RPCURL, &http.Client{Timeout: 30 * time.Second})
 	defer rpc.Close()
@@ -173,9 +180,12 @@ func run(cfg config.Config, log *slog.Logger) error {
 				CoverageLedgerID:   cfg.CoverageLedgerID,
 				ReporterRegistryID: cfg.ReporterRegistryID,
 			},
-			CORS: cfg.CORSOrigins,
-			Log:  log.With("component", "api"),
-			Now:  time.Now,
+			CORS:   cfg.CORSOrigins,
+			Log:    log.With("component", "api"),
+			Now:    time.Now,
+			Events: hub,
+			// Closing ctx ends live streams so shutdown does not wait on them.
+			Done: ctx.Done(),
 		}).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
