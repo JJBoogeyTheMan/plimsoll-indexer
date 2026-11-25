@@ -18,6 +18,7 @@ import (
 	"github.com/stellar/go-stellar-sdk/keypair"
 
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/api"
+	"github.com/plimsoll-protocol/plimsoll-indexer/internal/changelog"
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/config"
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/events"
 	"github.com/plimsoll-protocol/plimsoll-indexer/internal/horizon"
@@ -164,6 +165,13 @@ func run(cfg config.Config, log *slog.Logger) error {
 
 	} else {
 		log.Info("supply posting disabled (SUPPLY_POSTER_SECRET not set)")
+	}
+
+	// A malformed changelog would break the published API contract, so refuse
+	// to start rather than serve it.
+	changes, err := changelog.Load()
+	if err != nil {
+		return err
 	}
 
 	srv := &http.Server{
